@@ -16,7 +16,7 @@
   Run training/eval experiments, including the variations above, and collect results.
 
 #### Model inference demo for presentation (Tech Demo)
-  (Andrew) Inference demo completed. Can easily adapt this for tennis point inference.
+  (Andrew, Darbis) Inference demo completed. Can easily adapt this for tennis point inference.
 
 #### Presentation
   Collect and organize visualizations of training (e.g. loss curves).
