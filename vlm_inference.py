@@ -1,95 +1,55 @@
-import cv2
 import torch
 import os
-import json 
-from PIL import Image 
+import numpy as np
 # comment these env vars out if not using mps
-#os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 # Allow up to 75% of unified memory for MPS
-#os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.75"
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.75"
 # Start reclaiming cached buffers when 60% is used
-#os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.60"
+os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.60"
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+from transformers.video_utils import VideoMetadata
+from tennis_dataset import TennisPointDataset
 
-ANNOTATION_FILE= "data/annotations/V009.json"
-VIDEO_FILE = "data/videos/V009-002.mp4"
-TEMP_FRAME_DIR="temp_frames"
+ANNOTATION_DIR = "data/annotations"
+VIDEO_DIR = "data/videos"
 
-with open(ANNOTATION_FILE, "r", encoding="utf-8") as f:
-    data=json.load(f)
-def find_point(d):
-    if isinstance(d, dict):
-        if( "start" in d and 
-            "end" in d and
-            "name" in d and 
-            "custom" in d and 
-            isinstance(d["custom"],dict) and
-            ("Score" in d["custom"] or "Winner" in d["custom"])):
-            return d
-        for v in d.values():
-            result= find_point(v)
-            if result is not None:
-                return result
-    elif isinstance(d,list):
-        for item in d:
-            result= find_point(item)
-            if result is not None:
-                return result
-    return None 
-point=find_point(data)
+use_frame_proportion = 0.20  # 25 fps / 5 = 5 fps (this is what works on my M4)
 
-if point is None:
-    raise ValueError("Could not find a point with start/end/desc")
+points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VIDEO_DIR, use_frame_proportion=use_frame_proportion)  # 25 FPS video
 
-start=int(point["start"])
-end=int(point["end"])
+point = points_dataset[0]
 
-print("using point")
-print(json.dumps(point, indent=2))
+frames = point["frames"]
 
-os.makedirs(TEMP_FRAME_DIR, exist_ok=True)
-frame_indices=[start, (start+end)//2, end]
-frame_paths=[]
-
-cap=cv2.VideoCapture(VIDEO_FILE)
-for idx in frame_indices:
-    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-    ret, frame=cap.read()
-    if ret:
-        frame_path=os.path.join(TEMP_FRAME_DIR, f"{idx}.jpg")
-        cv2.imwrite(frame_path, frame)
-        frame_paths.append(frame_path)
-    else:
-        print("Warning could not read")
-cap.release()
-
-if not frame_paths:
-    raise RuntimeError("No frames were extracted")
-
-print("Saved frames:", frame_paths)
-
-
-
-
-
+if not os.path.isdir("frame_debug"):
+    os.mkdir("frame_debug")
+for i, frame in enumerate(frames):
+    frame.save(f"frame_debug/frame{i}.png")
 
 device = torch.device("mps") if torch.mps.is_available() else torch.device("cpu")  # change to cuda if using cuda enabled gpu
-model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", dtype=torch.float16, device_map=device).to(device)
+model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", dtype="auto", device_map=device).to(device)
 
 # max_pixels controls the visual token size (size of image patches passed to vision encoder transformer)
 # we want *up to* 256 28x28 image patches here (could be smaller because the processor has to snap the image resolution to the nearest dimensions divisible by 28).
-processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixels=256 * 28 * 28)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixels=128 * 28 * 28)
+
+video_metadata = VideoMetadata(
+    total_num_frames=len(frames),
+    fps=25.0 / use_frame_proportion,
+    duration=len(frames) / 25.0
+)
 
 messages = [
     {
         "role": "user",
-        "content": (
-            [{"type": "image", "image":p} for p in frame_paths]+
-            [{"type": "text", "text": "Describe the following tennis clip "}]
-
-
-            
-        ),
+        "content": [
+            {
+                "type": "video",
+                "video": [frame for frame in frames],
+            },
+            {"type": "text", "text": "Describe what happens in the tennis clip."}  # WE SHOULD ALSO PUT POINT METADATA HERE
+        ],
     }
 ]
 
@@ -98,11 +58,12 @@ inputs = processor.apply_chat_template(
     tokenize=True,
     add_generation_prompt=True,
     return_dict=True,
-    return_tensors="pt"
+    return_tensors="pt",
+    video_metadata=[video_metadata]
 ).to(device)
 
 with torch.no_grad():
-    generated_ids = model.generate(**inputs, max_new_tokens=128)
+    generated_ids = model.generate(**inputs, max_new_tokens=128)  # use model() to get loss and logits only during training loop
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
