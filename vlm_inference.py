@@ -20,7 +20,7 @@ points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VID
 
 point = points_dataset[0]
 
-frames = point["frames"]
+frames = point["messages"][0]["content"][0]["video"]
 
 if not os.path.isdir("frame_debug"):
     os.mkdir("frame_debug")
@@ -36,8 +36,8 @@ processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixel
 
 video_metadata = VideoMetadata(
     total_num_frames=len(frames),
-    fps=25.0 / use_frame_proportion,
-    duration=len(frames) / 25.0
+    fps=25.0 * use_frame_proportion,
+    duration=len(frames) / (25.0 * use_frame_proportion)
 )
 
 messages = [
@@ -63,7 +63,7 @@ inputs = processor.apply_chat_template(
 ).to(device)
 
 with torch.no_grad():
-    generated_ids = model.generate(**inputs, max_new_tokens=128)  # use model() to get loss and logits only during training loop
+    generated_ids = model.generate(**inputs, max_new_tokens=128)
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]

@@ -4,7 +4,6 @@ import cv2
 from torch.utils.data import Dataset
 from PIL import Image
 import math
-import numpy as np
 
 class TennisPointDataset(Dataset):
     def __init__(self, annotation_dir, video_dir, use_frame_proportion=0.5):
@@ -76,6 +75,25 @@ class TennisPointDataset(Dataset):
             sample["end"]
         )
         frames = self.convert_frames_to_PIL(frames)
+        print(f"Generated sample at index {idx}")
+        return {"messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "video",
+                                "video": [frame for frame in frames],
+                            },
+                            {"type": "text", "text": "Describe what happens in the tennis clip."}  # WE SHOULD ALSO PUT POINT METADATA HERE
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": sample["desc"]
+                    }
+                    ]
+                }
+        """
         return {
             "frames": frames,
             "frame_indices": frame_indices,
@@ -87,6 +105,8 @@ class TennisPointDataset(Dataset):
             "desc": sample["desc"],
             "score": sample["score"]
         }
+        """
+
 if __name__ == "__main__":
     dataset = TennisPointDataset(
         annotation_dir="data/annotations",
