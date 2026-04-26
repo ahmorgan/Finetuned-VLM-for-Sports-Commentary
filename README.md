@@ -19,6 +19,5 @@
   (Andrew, Darbis) Inference demo completed. Can easily adapt this for tennis point inference.
 
 #### Presentation
-  Collect and organize visualizations of training (e.g. loss curves).
-  Write presentation, including experimental setup and results.
-
+  (Tahiyat) Collect and organize visualizations of training (e.g. loss curves).
+  (Tahiyat) Write presentation, including experimental setup and results.
