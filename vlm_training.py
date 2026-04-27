@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import random_split
 import os
 import numpy as np
 # comment these env vars out if not using mps
@@ -25,6 +26,11 @@ VIDEO_DIR = "data/videos"
 use_frame_proportion = 0.20  # 25 fps / 5 = 5 fps (this is what works on my M4)
 
 points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VIDEO_DIR, use_frame_proportion=use_frame_proportion)  # 25 FPS video
+
+dataset_size = len(points_dataset)
+train_size = int(0.8 * dataset_size)
+eval_size = dataset_size - train_size
+train_dataset, eval_dataset = random_split(points_dataset, [train_size, eval_size])
 
 point = points_dataset[0]
 
@@ -143,9 +149,37 @@ def collate_fn(batch):
 
     return ret_batch
 
+def preprocess_logits_for_metrics(logits, labels):
+    """
+    converts full logits to argmax predictions
+    prevents the Trainer from storing massive logit tensors for whole eval dataset in memory
+    """
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    return logits.argmax(dim=-1)
+
 def compute_metrics(eval_pred):
-    # will compute perplexity and loss after N iterations here
-    pass
+    """
+    computes accuracy \
+    cross-entropy loss is handled automatically by HF Trainer 
+    and is logged as 'eval_loss'
+    """
+    # predictions already argmaxed because of preprocess_logits_for_metrics
+    predictions, labels = eval_pred.predictions, eval_pred.label_ids
+    
+    # flatten everything
+    predictions = predictions.flatten()
+    labels = labels.flatten()
+    
+    # mask out padded tokens (-100)
+    mask = labels != -100
+    
+    correct = (predictions[mask] == labels[mask]).sum()
+    total = mask.sum()
+    
+    accuracy = correct / total if total > 0 else 0.0
+    
+    return {"accuracy": accuracy}
 
 class ClearTorchCache(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
@@ -165,6 +199,8 @@ training_config = SFTConfig(
     optim='adamw_torch',
     save_strategy="steps",
     save_steps=100,
+    eval_statrategy="steps", # eval every n steps
+    eval_steps=100, # set n 
     logging_steps=1,
     logging_dir='./logs',
     output_dir='./checkpoint',
@@ -178,8 +214,11 @@ trainer = SFTTrainer(
     model=lora_model,
     processing_class=processor,
     args=training_config,
+    train_dataset=train_dataset, # use train split of the dataset
+    eval_dataset=eval_dataset, # use eval split of the dataset
     train_dataset=points_dataset,
     data_collator=collate_fn,
+    compute_metrics=compute_metrics, # pass metrics function
     callbacks=[ClearTorchCache()]  # --> callback after each training iteration which clears the MPS cache
 )
 
