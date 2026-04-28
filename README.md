@@ -3,20 +3,20 @@
 ## Tasks
 
 #### Dataset/DataLoader
-  (Darbis) Dataset class completed. Need to integrate into training/evaluation loop.
+  (Darbis) DONE Dataset class completed and integrated into training loop.
 
 #### Model training code
-  (Andrew) IN-PROGRESS Write basic VLM training loop that uses above Dataset class. 
+  (Andrew) DONE Write basic VLM training script that uses above Dataset class. 
 
 #### Model evaluation code
-  Evaluate model loss/perplexity and on validation set of unseen points at intervals throughout training.
+  (Josh and Andrew) DONE Evaluate model loss/perplexity and on validation set of unseen points at intervals throughout training. Josh - worked on compute_metrics and evaluation basics, Andrew - added ROUGE eval and inference on random samples every evaluation steps
 
 #### Experiment tracking / results collection
   Design experiments, including variations on model type/size and evaluation scenarios (e.g. try different types of tennis points).
   Run training/eval experiments, including the variations above, and collect results.
 
 #### Model inference demo for presentation (Tech Demo)
-  (Andrew, Darbis) Inference demo completed. Can easily adapt this for tennis point inference.
+  (Andrew, Darbis) DONE Inference demo completed. Can easily adapt this for tennis point inference.
 
 #### Presentation
   Collect and organize visualizations of training (e.g. loss curves).
