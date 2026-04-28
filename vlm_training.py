@@ -1,50 +1,75 @@
 import torch
 import os
 import numpy as np
-# comment these env vars out if not using mps
-os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-# Allow up to 75% of unified memory for MPS
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.95"
-# Start reclaiming cached buffers when 60% is used
-os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.60"
+from torch.utils.data import random_split
+from accelerate import Accelerator
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 from transformers.video_utils import VideoMetadata
 from tennis_dataset import TennisPointDataset
 from trl import SFTTrainer, SFTConfig
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import logging
-from transformers import QuantoConfig
+from transformers import BitsAndBytesConfig
 from transformers import TrainerCallback
 import gc
+import random
+from evaluate import load
+
+rouge = load("rouge")
 
 logging.enable_progress_bar()
 
+# accelerator = Accelerator()
+
+HF_TOKEN="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"
 ANNOTATION_DIR = "data/annotations"
 VIDEO_DIR = "data/videos"
 
-use_frame_proportion = 0.20  # 25 fps / 5 = 5 fps (this is what works on my M4)
+use_frame_proportion = 0.02  # 25 fps / 50 = 0.5 fps
+train_vision_model = False
+train_only_lmhead = False
 
 points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VIDEO_DIR, use_frame_proportion=use_frame_proportion)  # 25 FPS video
 
-point = points_dataset[0]
+dataset_size = len(points_dataset)
+train_size = int(0.80 * dataset_size)
+eval_size = dataset_size - train_size  # 20% of the dataset
+train_dataset, eval_dataset = random_split(points_dataset, [train_size, eval_size])
+
+print(f"Total dataset size: {dataset_size}")
+print(f"Training dataset size: {train_size}")
+print(f"Evaluation dataset size: {eval_size}")
+print(f"Settings: FPS: {25 * use_frame_proportion}, train vision model: {train_vision_model}, train only LM head: {train_only_lmhead}")
+
+point = points_dataset[random.randint(0, len(points_dataset)-1)]
 
 frames = point["messages"][0]["content"][0]["video"]
+print(f"Number of frames in the debug video: {len(frames)}")
 
 if not os.path.isdir("frame_debug"):
     os.mkdir("frame_debug")
 for i, frame in enumerate(frames):
     frame.save(f"frame_debug/frame{i}.png")
 
-quantization_config = QuantoConfig(weights="int4")
-device = torch.device("mps") if torch.mps.is_available() else torch.device("cpu")  # change to cuda if using cuda enabled gpu
-model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", dtype="auto", quantization_config=quantization_config, device_map=device)
-
-for param in model.model.visual.parameters():
-    param.requires_grad = False
+"""
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4"
+)
+"""
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+#device = torch.device("cuda:" + str(accelerator.local_process_index)) if torch.cuda.is_available() else torch.device("cpu")  # change to cuda if using cuda enabled gpu
+print(f"Using device: {device}")
+model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", dtype=torch.float16, device_map=device, token=HF_TOKEN, attn_implementation="sdpa")
+# model = prepare_model_for_kbit_training(model) 
 
 def print_trainable_params(model):
     num = 0
-    for param in model.parameters():
+    for name, param in model.named_parameters():
+        if name == "lm_head":
+            print(f"lm_head param count: {param.numel()}")
         if param.requires_grad:
             num += param.numel()
     return num
@@ -52,30 +77,37 @@ def print_trainable_params(model):
 print(f"Number of trainable params: {print_trainable_params(model)}")
 
 lora_config = LoraConfig(
-    r=2,  # rank of rank-decomposed weight matrix
+    r=8,  # rank of rank-decomposed weight matrix
     lora_alpha=16,
     bias="none",
     lora_dropout=0.05,
-    # qkv and proj from vision transformer, everything else from llm
-    target_modules=['q_proj', 'v_proj'],  # modules to apply LoRA to
+    target_modules=['q_proj', 'v_proj', 'lm_head'] if train_only_lmhead else ['q_proj', 'v_proj'],  # modules to apply LoRA to
     task_type="CAUSAL_LM"
 )
 lora_model = get_peft_model(model, lora_config)
+lora_model.enable_input_require_grads()
+lora_model.model.model.visual.enable_input_require_grads()
+lora_model.model.model.visual.gradient_checkpointing = True
+
+if train_only_lmhead:
+    for name, param in lora_model.named_parameters():
+        if "lm_head" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+if not train_vision_model:
+    for param in lora_model.model.model.visual.parameters():
+        param.requires_grad = False
 
 print(f"Number of trainable params in LoRA adapted model: {print_trainable_params(lora_model)}")
 
 # max_pixels controls the visual token size (size of image patches passed to vision encoder transformer)
 # we want *up to* 256 28x28 image patches here (could be smaller because the processor has to snap the image resolution to the nearest dimensions divisible by 28).
-processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixels=64 * 28 * 28)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", min_pixels=128 * 28 * 28, max_pixels=512 * 28 * 28)
+processor.video_processor.max_num_frames = 8
 
 def collate_fn(batch):
-    """
-    Processes a raw batch of data into input_ids that can be given to the model.
-    This function also applies masking to the prompt in ret_batch["labels"].
-
-    :param batch: raw batch of data from TennisPointDataset
-    :return: processed batch of masked, padded input_ids
-    """
     # Credit: Adapted code from https://www.datacamp.com/tutorial/fine-tuning-qwen3-vl-8b to write this collator.
 
     videos = [example["messages"][0]["content"][0]["video"] for example in batch]
@@ -118,6 +150,7 @@ def collate_fn(batch):
                 truncation=True,
                 video_metadata=video_metadata
                 )
+    print(f"Total token count: {ret_batch['input_ids'].shape[-1]}")
 
     prompt_ids = processor.tokenizer(
         prompt_texts,
@@ -141,48 +174,159 @@ def collate_fn(batch):
     labels[labels == processor.tokenizer.pad_token_id] = -100
     ret_batch["labels"] = labels
 
+    ret_batch.to(device, non_blocking=True)
+
     return ret_batch
 
+def preprocess_logits_for_metrics(logits, labels):
+    """
+    converts full logits to argmax prediction to save memory
+    """
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    return logits.argmax(dim=-1)
+
 def compute_metrics(eval_pred):
-    # will compute perplexity and loss after N iterations here
-    pass
+    """
+    computes accuracy \
+    cross-entropy loss is handled automatically by HF Trainer 
+    and is logged as 'eval_loss'
+    """
+    print("Computing metrics on evaluation batch...")
+    # predictions already argmaxed because of preprocess_logits_for_metrics
+    predictions, labels = eval_pred.predictions, eval_pred.label_ids
+    
+    # flatten everything
+    predictions = predictions.flatten()
+    labels = labels.flatten()
+    
+    # mask out padded tokens (-100)
+    mask = labels != -100
+
+    correct = (predictions[mask] == labels[mask]).sum()
+    total = mask.sum()
+    
+    accuracy = correct / total if total > 0 else 0.0
+
+    labels[labels == -100] = processor.tokenizer.pad_token_id
+    predictions[predictions == -100] = processor.tokenizer.pad_token_id
+
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return {"token_accuracy": accuracy}
 
 class ClearTorchCache(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
-        torch.mps.empty_cache()
+        torch.cuda.empty_cache()
         gc.collect()
-        print("Emptied MPS cache")
+        print("Emptied CUDA cache")
+
+class GenerationEvalCallback(TrainerCallback):
+    """
+    Jury-rigged evaluation callback to generate and print model outputs
+    """
+
+    def __init__(self, eval_dataset, processor, num_samples=16):
+        self.eval_dataset = eval_dataset
+        self.processor = processor
+        self.num_samples = num_samples
+
+    def on_evaluate(self, args, state, control, model, **kwargs):
+        model.eval()
+        with torch.no_grad():
+            all_rouge = []
+            for i in range(10):  # just do 10 random samples because full inference is slow
+                idx = random.randint(0, len(self.eval_dataset)-1)
+                sample = self.eval_dataset[idx]
+                frames = sample["messages"][0]["content"][0]["video"]
+                
+                video_metadata = VideoMetadata(
+                    total_num_frames=len(frames),
+                    fps=25.0 * use_frame_proportion,
+                    duration=len(frames) / (25.0 * use_frame_proportion)
+                )
+
+                messages = [sample["messages"][0]]
+
+                inputs = self.processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    video_metadata=[video_metadata]
+                ).to(device)
+
+                generated_ids = model.generate(**inputs, max_new_tokens=256)
+                generated_ids_trimmed = [
+                    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                ]
+                output_text = processor.batch_decode(
+                    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )[0]
+
+                print(f"\nGround truth description for sample {idx}:")
+                print(sample["messages"][1]["content"])
+                print("\nModel output:")
+                print(output_text)
+                print()
+
+                rouge_score = rouge.compute(predictions=[output_text], references=[sample["messages"][1]["content"]])
+                print(f"ROUGE score: {rouge_score}")
+                all_rouge.append(rouge_score)
+            avg_rouge = {key: np.mean([score[key] for score in all_rouge]) for key in all_rouge[0].keys()}
+            print(f"Average ROUGE score: {avg_rouge}")
+        model.train()
+
 
 training_config = SFTConfig(
+    #pad_to_multiple_of=4,
     gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={'use_reentrant': False},
-    gradient_accumulation_steps=1,
+    gradient_checkpointing_kwargs={'use_reentrant': False},  
+    gradient_accumulation_steps=8,
     per_device_train_batch_size=1,  # we are on one device
-    auto_find_batch_size=True,  # If batch size would cause OOM, halves its size until it works
-    max_length=64,
-    num_train_epochs=10,
+    per_device_eval_batch_size=2,
+    auto_find_batch_size=False,  # If batch size would cause OOM, halves its size until it works
+    dataloader_pin_memory=False,  # maybe figure out how to use this if there is time
+    max_length=4096,
+    num_train_epochs=3,
     learning_rate=1e-4,
-    optim='adamw_torch',
+    optim='paged_adamw_8bit',
+    max_grad_norm=1.0,
     save_strategy="steps",
-    save_steps=100,
+    save_steps=300,
+    logging_strategy="steps",
     logging_steps=1,
     logging_dir='./logs',
+    eval_strategy="steps",
+    eval_steps=10,
+    eval_on_start=True,
+    do_eval=True,
     output_dir='./checkpoint',
     report_to='none',
     dataset_kwargs={"skip_prepare_dataset": True},
     dataset_text_field=None,
-    remove_unused_columns=False
+    remove_unused_columns=False,
+    lr_scheduler_type="cosine",
+    weight_decay=0.01,
+    bf16=False,
+    fp16=True,
+    #ddp_find_unused_parameters=False
 )
 
 trainer = SFTTrainer(
     model=lora_model,
     processing_class=processor,
+    preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     args=training_config,
-    train_dataset=points_dataset,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
     data_collator=collate_fn,
-    callbacks=[ClearTorchCache()]  # --> callback after each training iteration which clears the MPS cache
+    callbacks=[ClearTorchCache(), GenerationEvalCallback(eval_dataset, processor)],  # --> callback after each training iteration which clears the gpu cache
+    compute_metrics=compute_metrics
 )
 
-torch.mps.empty_cache()
+torch.cuda.empty_cache()
 gc.collect()
 trainer.train()
