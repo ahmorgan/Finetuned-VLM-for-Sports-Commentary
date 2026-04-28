@@ -20,7 +20,7 @@ points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VID
 
 point = points_dataset[0]
 
-frames = point["messages"][0]["content"][0]["video"]
+frames = point["frames"]
 
 if not os.path.isdir("frame_debug"):
     os.mkdir("frame_debug")
@@ -40,6 +40,7 @@ video_metadata = VideoMetadata(
     duration=len(frames) / (25.0 * use_frame_proportion)
 )
 
+player1, player2 = point["player1"], point["player2"]
 messages = [
     {
         "role": "user",
@@ -48,7 +49,7 @@ messages = [
                 "type": "video",
                 "video": [frame for frame in frames],
             },
-            {"type": "text", "text": "Describe what happens in the tennis clip."}  # WE SHOULD ALSO PUT POINT METADATA HERE
+            {"type": "text", "text": f"This tennis clip shows a point between {player1} and {player2}. The score is {point['score']}. Describe what happens in the tennis clip, focusing on the players' actions and point outcome."}  # WE SHOULD ALSO PUT POINT METADATA HERE
         ],
     }
 ]
@@ -63,7 +64,7 @@ inputs = processor.apply_chat_template(
 ).to(device)
 
 with torch.no_grad():
-    generated_ids = model.generate(**inputs, max_new_tokens=128)
+    generated_ids = model.generate(**inputs, max_new_tokens=128)  # use model() to get loss and logits only during training loop
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]

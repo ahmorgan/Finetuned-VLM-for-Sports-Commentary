@@ -5,6 +5,14 @@ from torch.utils.data import Dataset
 from PIL import Image
 import math
 
+match_to_players = {
+    "V006.json": ("Serena Williams", "Maria Sharapova"),
+    "V007.json": ("Jo-Wilfried Tsonga", "Novak Djokovic"),
+    "V008.json": ("Serena Williams", "Vera Zvonareva"),
+    "V009.json": ("Roger Federer", "Juan Martin Del Potro"),
+    "V010.json": ("Victoria Azarenka", "Serena Williams"),
+}
+
 class TennisPointDataset(Dataset):
     def __init__(self, annotation_dir, video_dir, use_frame_proportion=0.5):
         self.annotation_dir=annotation_dir
@@ -38,7 +46,9 @@ class TennisPointDataset(Dataset):
                     "start": int(point["start"]),
                     "end": int(point["end"]),
                     "desc": point.get("desc",""),
-                    "score": point["custom"]["Score"]
+                    "score": point["custom"]["Score"],
+                    "player1": match_to_players[ann_file][0],
+                    "player2": match_to_players[ann_file][1]
                 })
     def sample_frame_indices(self,start,end):
         if start-end == 1:
@@ -63,7 +73,7 @@ class TennisPointDataset(Dataset):
         return frames, frame_indices
     def convert_frames_to_PIL(self, frames):
         for i in range(len(frames)):
-            frames[i] = Image.fromarray(frames[i])
+            frames[i] = Image.fromarray(frames[i][150:,250:-250])  # also center crop
         return frames
     def __len__(self):
         return len(self.samples)
@@ -75,6 +85,7 @@ class TennisPointDataset(Dataset):
             sample["end"]
         )
         frames = self.convert_frames_to_PIL(frames)
+        player1, player2 = sample["player1"], sample["player2"]
         print(f"Generated sample at index {idx}")
         return {"messages": [
                     {
@@ -84,7 +95,7 @@ class TennisPointDataset(Dataset):
                                 "type": "video",
                                 "video": [frame for frame in frames],
                             },
-                            {"type": "text", "text": "Describe what happens in the tennis clip."}  # WE SHOULD ALSO PUT POINT METADATA HERE
+                            {"type": "text", "text": f"This tennis clip shows a point between {player1} and {player2}. The score is {sample['score']}. Describe what happens in the tennis clip, focusing on the players' actions and point outcome."}
                         ],
                     },
                     {
