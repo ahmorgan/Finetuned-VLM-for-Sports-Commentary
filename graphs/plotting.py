@@ -124,3 +124,5 @@ def plot_training_and_eval_logs(log_file_path, output_filename):
 # Execute the functions individually to avoid combining curves
 plot_training_and_eval_logs("output_vlmft_initial.log", "initial_training_curves.png")
 plot_training_and_eval_logs("output_vlmft_final.log", "final_training_curves.png")
+plot_training_and_eval_logs("graphs\output_vlmft_vitunfrozen.log", "vit_unfrozen_exp.png")
+plot_training_and_eval_logs("graphs\slurm_vlm-exp_15783969.out", "llm_head_only_exp.png")
