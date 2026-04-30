@@ -32,7 +32,7 @@ model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-2B-Instru
 
 # max_pixels controls the visual token size (size of image patches passed to vision encoder transformer)
 # we want *up to* 256 28x28 image patches here (could be smaller because the processor has to snap the image resolution to the nearest dimensions divisible by 28).
-processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixels=128 * 28 * 28)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", max_pixels=512 * 28 * 28)
 
 video_metadata = VideoMetadata(
     total_num_frames=len(frames),
