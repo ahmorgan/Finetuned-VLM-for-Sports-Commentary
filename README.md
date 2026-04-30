@@ -21,3 +21,11 @@
 #### Presentation
   (Tahiyat) Collect and organize visualizations of training (e.g. loss curves).
   (Tahiyat) Write presentation, including experimental setup and results.
+
+# Running inference code
+
+You will need to create a new conda environment using the provided environment.yml file. You will need to also update slurm_script.sh to execute vlm_inference.py (not vlm_training.py). There is a boolean parameter that controls whether or not the checkpoint is used. You may also need to update the checkpoint name in the code.
+
+# Running training code
+
+
