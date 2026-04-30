@@ -15,7 +15,7 @@ import cv2
 ANNOTATION_DIR = "data/annotations"
 VIDEO_DIR = "data/videos"
 
-use_frame_proportion = 0.02 # 25 fps / 5 = 5 fps (this is what works on my M4)
+use_frame_proportion = 0.02
 use_checkpoint = True
 
 points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VIDEO_DIR, use_frame_proportion=use_frame_proportion)  # 25 FPS video
