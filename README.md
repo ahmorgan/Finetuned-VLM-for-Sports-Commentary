@@ -28,4 +28,4 @@ You will need to create a new conda environment using the provided environment.y
 
 # Running training code
 
-
+The same instructions as above apply, besides the checkpoint. You can modify the boolean parameters at the top of the file to control which experiment is run. Set neither to true to run the LLM-only attention weights experiment.
