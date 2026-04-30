@@ -26,7 +26,7 @@ ANNOTATION_DIR = "data/annotations"
 VIDEO_DIR = "data/videos"
 
 use_frame_proportion = 0.02  # 25 fps / 50 = 0.5 fps
-train_vision_model = False
+train_vision_model = True
 train_only_lmhead = False
 
 points_dataset = TennisPointDataset(annotation_dir=ANNOTATION_DIR, video_dir=VIDEO_DIR, use_frame_proportion=use_frame_proportion)  # 25 FPS video
@@ -76,12 +76,24 @@ def print_trainable_params(model):
 
 print(f"Number of trainable params: {print_trainable_params(model)}")
 
+target_modules = {
+    "train_only_lmhead": ['lm_head'],
+    "train_vision_model": ['q_proj', 'v_proj', 'qkv'],
+}
+
+if train_only_lmhead:
+    target_modules_to_train = target_modules["train_only_lmhead"]
+elif train_vision_model:
+    target_modules_to_train = target_modules["train_vision_model"]
+else:
+    target_modules_to_train = ['q_proj', 'v_proj']
+
 lora_config = LoraConfig(
     r=8,  # rank of rank-decomposed weight matrix
     lora_alpha=16,
     bias="none",
     lora_dropout=0.05,
-    target_modules=['q_proj', 'v_proj', 'lm_head'] if train_only_lmhead else ['q_proj', 'v_proj'],  # modules to apply LoRA to
+    target_modules=target_modules_to_train,  # modules to apply LoRA to
     task_type="CAUSAL_LM"
 )
 lora_model = get_peft_model(model, lora_config)
@@ -89,22 +101,16 @@ lora_model.enable_input_require_grads()
 lora_model.model.model.visual.enable_input_require_grads()
 lora_model.model.model.visual.gradient_checkpointing = True
 
-if train_only_lmhead:
-    for name, param in lora_model.named_parameters():
-        if "lm_head" in name:
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
-
-if not train_vision_model:
-    for param in lora_model.model.model.visual.parameters():
-        param.requires_grad = False
+if train_vision_model:
+    lora_model.model.model.visual.to(torch.float32)  # avoid problems with gradscaler
 
 print(f"Number of trainable params in LoRA adapted model: {print_trainable_params(lora_model)}")
 
 # max_pixels controls the visual token size (size of image patches passed to vision encoder transformer)
 # we want *up to* 256 28x28 image patches here (could be smaller because the processor has to snap the image resolution to the nearest dimensions divisible by 28).
-processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", min_pixels=128 * 28 * 28, max_pixels=512 * 28 * 28)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", min_pixels=128 * 28 * 28, max_pixels=512 * 28 * 28)  # SHOULD BE 32 x 32, leaving this here as we used this in our experiments.
+# it shouldn't majorly impact the result, it just sets a slightly lower cap on the number of pixels the processor can use.
+
 processor.video_processor.max_num_frames = 8
 
 def collate_fn(batch):
