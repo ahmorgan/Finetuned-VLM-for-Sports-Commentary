@@ -21,7 +21,7 @@ logging.enable_progress_bar()
 
 # accelerator = Accelerator()
 
-HF_TOKEN="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"
+HF_TOKEN="_"
 ANNOTATION_DIR = "data/annotations"
 VIDEO_DIR = "data/videos"
 
